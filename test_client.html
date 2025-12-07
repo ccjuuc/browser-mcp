@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser MCP 测试面板</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { color: #333; margin-bottom: 20px; }
+        h2 { font-size: 1.2em; color: #555; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+        .status-ok { background: #d4edda; color: #155724; }
+        .status-err { background: #f8d7da; color: #721c24; }
+        .input-group { margin-bottom: 15px; display: flex; gap: 10px; }
+        input[type="text"] { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 8px 16px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; transition: background 0.2s; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        pre { background: #f8f9fa; padding: 15px; border-radius: 4px; overflow-x: auto; border: 1px solid #e9ecef; white-space: pre-wrap; font-size: 0.9em; max-height: 400px; overflow-y: auto; }
+        .result-item { border-bottom: 1px solid #eee; padding: 10px 0; }
+        .result-item:last-child { border-bottom: none; }
+        .file-path { font-family: monospace; color: #0066cc; font-weight: bold; }
+        .code-snippet { background: #2d2d2d; color: #f8f8f2; padding: 10px; border-radius: 4px; margin-top: 5px; font-family: monospace; font-size: 0.85em; overflow-x: auto; }
+        .meta { font-size: 0.8em; color: #666; margin-top: 4px; }
+        #serverUrl { width: 100%; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Browser MCP 测试面板</h1>
+
+    <div class="card">
+        <h2>📡 服务器连接</h2>
+        <div class="input-group">
+            <input type="text" id="serverUrl" value="http://localhost:3000" placeholder="服务器地址">
+            <button onclick="checkHealth()">连接检查</button>
+        </div>
+        <div id="connectionStatus"></div>
+    </div>
+
+    <div class="card">
+        <h2>🛠️ 功能测试</h2>
+        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <button onclick="listTools()">📂 列出工具</button>
+            <button onclick="listResources()">📄 列出资源</button>
+        </div>
+
+        <h3>🔍 代码搜索</h3>
+        <div class="input-group">
+            <input type="text" id="searchQuery" placeholder="输入关键词 (例如: media player)" value="media player">
+            <button onclick="searchCode('search_code')">文本搜索</button>
+            <button onclick="searchCode('search_by_embedding')" style="background-color: #28a745;">向量搜索</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📊 结果输出</h2>
+        <div id="output"></div>
+        <pre id="rawOutput" style="display:none;"></pre>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+        const rawOutput = document.getElementById('rawOutput');
+        
+        async function request(method, path = "", body = null) {
+            const baseUrl = document.getElementById('serverUrl').value.replace(/\/$/, "");
+            output.innerHTML = '<div style="color: #666;">🔄 请求中...</div>';
+            rawOutput.style.display = 'none';
+
+            try {
+                const options = {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' }
+                };
+                if (body) options.body = JSON.stringify(body);
+
+                const response = await fetch(`${baseUrl}${path}`, options);
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                output.innerHTML = `<div style="color: red;">❌ 请求失败: ${error.message}</div>`;
+                throw error;
+            }
+        }
+
+        async function checkHealth() {
+            try {
+                const data = await request('GET', '/health');
+                document.getElementById('connectionStatus').innerHTML = `
+                    <span class="status-badge status-ok">✅ 连接成功</span>
+                    <span style="margin-left: 10px; color: #666;">版本: ${data.version} | 模式: ${data.mode}</span>
+                `;
+                output.innerText = JSON.stringify(data, null, 2);
+                rawOutput.innerText = JSON.stringify(data, null, 2);
+                rawOutput.style.display = 'block';
+            } catch (e) {
+                document.getElementById('connectionStatus').innerHTML = `
+                    <span class="status-badge status-err">❌ 连接失败</span>
+                    <p style="font-size: 0.9em; margin-top: 5px;">请确保服务器已启动: <code>.\\target\\release\\browser-mcp.exe --http</code></p>
+                `;
+            }
+        }
+
+        async function rpcCall(method, params = null) {
+            const body = {
+                jsonrpc: "2.0",
+                id: Date.now(),
+                method: method,
+                params: params
+            };
+            const data = await request('POST', '/', body);
+            renderResult(data);
+        }
+
+        async function listTools() {
+            rpcCall('tools/list');
+        }
+
+        async function listResources() {
+            rpcCall('resources/list');
+        }
+
+        async function searchCode(toolName) {
+            const query = document.getElementById('searchQuery').value;
+            if (!query) return alert("请输入搜索内容");
+            
+            rpcCall('tools/call', {
+                name: toolName,
+                arguments: {
+                    query: query,
+                    maxResults: 5
+                }
+            });
+        }
+
+        function renderResult(data) {
+            rawOutput.innerText = JSON.stringify(data, null, 2);
+            rawOutput.style.display = 'block';
+            
+            if (data.error) {
+                output.innerHTML = `<div style="color: red;">❌ RPC 错误: ${data.error.message}</div>`;
+                return;
+            }
+
+            const result = data.result;
+            
+            // 处理工具列表
+            if (result.tools) {
+                output.innerHTML = result.tools.map(tool => `
+                    <div class="result-item">
+                        <div style="font-weight: bold; color: #2c3e50;">🛠️ ${tool.name}</div>
+                        <div style="color: #666;">${tool.description}</div>
+                        <div class="meta">参数: ${JSON.stringify(Object.keys(tool.inputSchema.properties || {}))}</div>
+                    </div>
+                `).join('');
+                return;
+            }
+
+            // 处理资源列表
+            if (result.resources) {
+                output.innerHTML = `<div>📚 发现 ${result.resources.length} 个资源</div>`;
+                return;
+            }
+
+            // 处理搜索结果
+            if (result.content && Array.isArray(result.content)) {
+                let text = result.content[0].text;
+                try {
+                    // 尝试解析 JSON 格式的搜索结果（如果是结构化的）
+                    const parsed = JSON.parse(text);
+                    if (Array.isArray(parsed)) {
+                        text = parsed; // 使用解析后的数组
+                    }
+                } catch (e) {
+                    // 不是 JSON，按普通文本处理
+                }
+
+                if (Array.isArray(text)) {
+                    // 结构化结果显示
+                    output.innerHTML = text.map(item => {
+                        // 适配不同的返回结构 (Vector Search vs Text Search)
+                        let file_path = item.file_path;
+                        let content = item.content;
+                        let start_line = item.start_line;
+                        let score = item.score;
+                        let isVectorResult = false;
+
+                        // 处理向量搜索结果结构: { chunk: {...}, similarity: 0.8 }
+                        if (item.chunk) {
+                            file_path = item.chunk.file_path;
+                            content = item.chunk.content;
+                            start_line = item.chunk.start_line;
+                            score = item.similarity;
+                            isVectorResult = true;
+                        }
+
+                        // 如果 score 不存在，默认为 0
+                        const scoreDisplay = score !== undefined ? score.toFixed(4) : "N/A";
+                        
+                        return `
+                        <div class="result-item">
+                            <div class="file-path">
+                                ${isVectorResult ? '🎯' : '📄'} ${file_path} 
+                                <span style="color: #999; font-weight: normal;">(Line ${start_line || '?'})</span>
+                            </div>
+                            <div class="code-snippet">${escapeHtml(content || '')}</div>
+                            <div class="meta">相关性: ${scoreDisplay}</div>
+                        </div>
+                    `}).join('');
+                } else {
+                    // 纯文本结果
+                    output.innerHTML = `<div style="white-space: pre-wrap;">${escapeHtml(text)}</div>`;
+                }
+                return;
+            }
+
+            output.innerHTML = "<div>✅ 请求成功完成</div>";
+        }
+
+        function escapeHtml(text) {
+            if (!text) return "";
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+        
+        // 自动检查健康状态
+        checkHealth();
+    </script>
+</body>
+</html>

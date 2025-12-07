@@ -1,0 +1,53 @@
+[package]
+name = "browser-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+walkdir = "2.4"
+regex = "1.10"
+ignore = "0.4"
+dirs = "5.0"
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-cpp = "0.22"
+tree-sitter-c = "0.21"
+tree-sitter-java = "0.21"
+tree-sitter-go = "0.21"
+tree-sitter-json = "0.21"
+tree-sitter-yaml = "0.7"
+# tree-sitter-markdown = "0.7"  # 版本冲突，暂时移除
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
+# 模型嵌入支持（默认启用 CodeBERT + Candle）
+# 使用 candle 0.4 版本，全部设为可选依赖
+candle-core = { version = "0.8.2", optional = true }
+candle-nn = { version = "0.8.2", optional = true }
+candle-transformers = { version = "0.8.2", features = ["default"], optional = true }
+tokenizers = "0.19"
+shellexpand = "3.1"
+qdrant-client = "1.16.0"
+uuid = { version = "1.19.0", features = ["v5"] }
+# HTTP 服务器支持
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
+
+[features]
+default = []
+model-embedding = ["candle-core", "candle-nn", "candle-transformers"]  # 启用模型嵌入支持
+
+[dev-dependencies]
+tokio-test = "0.4"
+

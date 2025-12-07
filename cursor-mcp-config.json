@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "browser-mcp": {
+      "command": "H:\\browser-mcp\\target\\release\\browser-mcp.exe",
+      "args": [],
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  }
+}
