@@ -43,9 +43,11 @@ uuid = { version = "1.19.0", features = ["v5"] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+# 用于从 Hugging Face 下载模型
+reqwest = { version = "0.12", features = ["blocking"] }
 
 [features]
-default = []
+default = ["model-embedding"]  # 默认启用模型嵌入支持
 model-embedding = ["candle-core", "candle-nn", "candle-transformers"]  # 启用模型嵌入支持
 
 [dev-dependencies]

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "browser-mcp": {
-      "command": "H:\\browser-mcp\\target\\release\\browser-mcp.exe",
+      "command": "/Users/ext.shangzhijie1/browser-mcp/target/release/browser-mcp",
       "args": [],
       "env": {
         "RUST_LOG": "info"
@@ -9,3 +9,4 @@
     }
   }
 }
+``

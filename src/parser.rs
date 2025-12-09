@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tree_sitter::{Language, Parser, Tree};
@@ -16,6 +16,7 @@ pub enum LanguageType {
     Go,
     Json,
     Yaml,
+    #[allow(dead_code)]
     Markdown,
     Html,
     Css,
@@ -227,7 +228,7 @@ impl CodeParser {
         node: &tree_sitter::Node,
         _cursor: &mut tree_sitter::TreeCursor,
         content: &str,
-        lines: &[&str],
+        _lines: &[&str],
         target_types: &[&str],
         max_chunk_size: usize,
         chunks: &mut Vec<CodeChunk>,

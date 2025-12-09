@@ -71,20 +71,34 @@ async fn main() -> Result<()> {
         qdrant_storage,
     ));
     
-    // 检查是否需要索引
+    // 检查索引状态
     let state_path = std::env::current_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join("browser-mcp-index.json");
     
-    let needs_indexing = !state_path.exists();
-    if needs_indexing {
-        tracing::info!("No index state found, initial indexing required");
+    let has_index_state = state_path.exists();
+    if has_index_state {
+        // 检查已索引的文件数量
+        if let Ok(content) = std::fs::read_to_string(&state_path) {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(file_states) = state.get("file_states").and_then(|v| v.as_object()) {
+                    let indexed_count = file_states.len();
+                    tracing::info!("Index state found with {} files indexed. Continuing indexing for new/modified files...", indexed_count);
+                } else {
+                    tracing::info!("Index state found but empty. Starting fresh indexing...");
+                }
+            } else {
+                tracing::info!("Index state file corrupted. Starting fresh indexing...");
+            }
+        } else {
+            tracing::info!("Index state found but unreadable. Starting fresh indexing...");
+        }
     } else {
-        tracing::info!("Index state found, skipping initial indexing");
+        tracing::info!("No index state found, starting initial indexing...");
     }
     
-    // 如果启用了 Qdrant 且需要索引，启动后台索引任务
-    if indexer.is_qdrant_enabled() && needs_indexing {
+    // 如果启用了 Qdrant，始终启动索引任务（会跳过已索引且未修改的文件）
+    if indexer.is_qdrant_enabled() {
         let indexer_clone = indexer.clone();
         tokio::spawn(async move {
             if let Err(e) = indexer_clone.index_codebase().await {
@@ -159,12 +173,41 @@ service:
                 .arg("--config-path")
                 .arg(&config_path)
                 .current_dir(qdrant_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn();
             
             match child {
-                Ok(_) => {
-                    tracing::info!("Qdrant started at {:?}", storage_path);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                Ok(mut child_handle) => {
+                    tracing::info!("Qdrant process started, waiting for it to be ready...");
+                    
+                    // 等待 Qdrant 启动并检查是否成功
+                    let mut attempts = 0;
+                    let max_attempts = 30; // 最多等待 30 秒
+                    let mut qdrant_ready = false;
+                    
+                    while attempts < max_attempts {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        
+                        // 检查进程是否还在运行
+                        if let Ok(Some(_)) = child_handle.try_wait() {
+                            tracing::error!("Qdrant process exited unexpectedly");
+                            break;
+                        }
+                        
+                        // 检查端口是否可访问
+                        if tokio::net::TcpStream::connect("127.0.0.1:6334").await.is_ok() {
+                            qdrant_ready = true;
+                            tracing::info!("Qdrant is ready on port 6334");
+                            break;
+                        }
+                        
+                        attempts += 1;
+                    }
+                    
+                    if !qdrant_ready {
+                        tracing::warn!("Qdrant may not be ready yet, but continuing...");
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to start Qdrant: {}", e);
@@ -175,17 +218,42 @@ service:
         tracing::info!("Qdrant already running on port 6334");
     }
 
+    // 再次检查 Qdrant 是否可用（给启动一些额外时间）
+    let mut retries = 0;
+    let max_retries = 5;
+    let mut qdrant_available = false;
+    
+    while retries < max_retries {
+        if tokio::net::TcpStream::connect("127.0.0.1:6334").await.is_ok() {
+            qdrant_available = true;
+            break;
+        }
+        retries += 1;
+        if retries < max_retries {
+            tracing::debug!("Waiting for Qdrant to be ready (attempt {}/{})...", retries, max_retries);
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    }
+    
+    if !qdrant_available {
+        tracing::warn!("Qdrant is not available on port 6334. Vector search will be disabled.");
+        return None;
+    }
+
     match QdrantStorage::new(&config.qdrant.url, config.qdrant.collection_name.clone(), config.embedding.dimension as u64) {
         Ok(storage) => {
             if let Err(e) = storage.init().await {
                 tracing::error!("Failed to initialize Qdrant: {}", e);
+                tracing::warn!("Vector search will be disabled. You can still use text search.");
                 None
             } else {
+                tracing::info!("Qdrant initialized successfully");
                 Some(Arc::new(storage))
             }
         }
         Err(e) => {
             tracing::error!("Failed to create Qdrant client: {}", e);
+            tracing::warn!("Vector search will be disabled. You can still use text search.");
             None
         }
     }

@@ -38,10 +38,12 @@ pub struct CodebaseIndexer {
 }
 
 impl CodebaseIndexer {
+    #[allow(dead_code)]
     pub fn new(codebase_path: PathBuf) -> Self {
         Self::with_config(codebase_path, CodebaseConfig::default())
     }
 
+    #[allow(dead_code)]
     pub fn with_config(codebase_path: PathBuf, config: CodebaseConfig) -> Self {
         Self::with_embedding_config(codebase_path, config, crate::embedding::EmbeddingConfig::default(), None)
     }
@@ -329,14 +331,17 @@ impl CodebaseIndexer {
             });
 
             let codebase_path = self.codebase_path.clone();
+            tracing::info!("Scanning codebase at: {:?}", codebase_path);
+            
+            // 先收集所有需要处理的文件路径
+            tracing::info!("Collecting files to index...");
+            let mut files_to_process: Vec<(PathBuf, u64, u64)> = Vec::new(); // (path, modified_time, file_size)
+            
             let walker = WalkBuilder::new(&codebase_path)
                 .hidden(false)
                 .git_ignore(true)
                 .git_exclude(true)
                 .build();
-
-            let mut indexed_count = 0;
-            let mut skipped_count = 0;
             
             for entry in walker {
                 let entry = entry?;
@@ -363,12 +368,6 @@ impl CodebaseIndexer {
                     continue;
                 }
 
-                let relative_path = path
-                    .strip_prefix(&self.codebase_path)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
-
                 let modified_time = metadata
                     .modified()
                     .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -377,15 +376,53 @@ impl CodebaseIndexer {
                     .as_secs();
                 
                 let file_size = metadata.len();
+                
+                files_to_process.push((path.to_path_buf(), modified_time, file_size));
+            }
+            
+            let total_files = files_to_process.len();
+            tracing::info!("Found {} files to process", total_files);
+            tracing::info!("Starting indexing (progress will be updated for each file)...");
 
+            let mut indexed_count = 0;
+            let mut skipped_count = 0;
+            let mut model_embedded_count = 0; // 使用模型向量化的文件数量
+            let mut processed_count = 0; // 已处理的文件数（包括跳过的）
+            
+            // 处理每个文件
+            for (path, modified_time, file_size) in files_to_process {
+                let relative_path = path
+                    .strip_prefix(&self.codebase_path)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+
+                processed_count += 1;
+                
                 if !state.should_index(&relative_path, modified_time, file_size) {
                     skipped_count += 1;
+                    // 每处理一个文件就更新一次进度
+                    eprint!("\r[Indexing] Processed: {}/{} | Indexed: {} | Skipped: {} | Model-embedded: {}... ", 
+                           processed_count, total_files, indexed_count, skipped_count, model_embedded_count);
+                    use std::io::Write;
+                    let _ = std::io::stderr().flush();
                     continue;
                 }
 
                 match self.chunk_file(&relative_path).await {
                     Ok(chunks) => {
                         if !chunks.is_empty() {
+                            // 检查是否使用了模型向量化（而不是 TF-IDF）
+                            // 只有当 chunks 有 embedding 且 embedder 使用模型时才计数
+                            let has_embeddings = chunks.iter().any(|chunk| chunk.embedding.is_some());
+                            if has_embeddings {
+                                if let Some(ref embedder) = self.embedder {
+                                    if embedder.is_using_model() {
+                                        model_embedded_count += 1;
+                                    }
+                                }
+                            }
+                            
                             qdrant.upsert_chunks(chunks).await?;
                             indexed_count += 1;
                             
@@ -397,16 +434,23 @@ impl CodebaseIndexer {
                                 if let Err(e) = state.save(&state_path) {
                                     tracing::warn!("Failed to save index state: {}", e);
                                 }
-                                // 使用单行更新，类似 Chromium 编译进度
-                                eprint!("\r[Indexing] {}/{} files indexed... ", indexed_count, indexed_count + skipped_count);
-                                use std::io::Write;
-                                let _ = std::io::stderr().flush();
                             }
                         }
+                        
+                        // 每处理一个文件就更新一次进度
+                        eprint!("\r[Indexing] Processed: {}/{} | Indexed: {} | Skipped: {} | Model-embedded: {}... ", 
+                               processed_count, total_files, indexed_count, skipped_count, model_embedded_count);
+                        use std::io::Write;
+                        let _ = std::io::stderr().flush();
                     }
                     Err(e) => {
                         // 降低日志级别，避免刷屏
                         tracing::debug!("Failed to index file {}: {}", relative_path, e);
+                        // 即使失败也要更新进度
+                        eprint!("\r[Indexing] Processed: {}/{} | Indexed: {} | Skipped: {} | Model-embedded: {}... ", 
+                               processed_count, total_files, indexed_count, skipped_count, model_embedded_count);
+                        use std::io::Write;
+                        let _ = std::io::stderr().flush();
                     }
                 }
             }
@@ -419,7 +463,10 @@ impl CodebaseIndexer {
                 tracing::warn!("Failed to save final index state: {}", e);
             }
 
-            tracing::info!("Indexing completed. Indexed: {}, Skipped: {}", indexed_count, skipped_count);
+            tracing::info!(
+                "Indexing completed. Indexed: {}, Skipped: {}, Model-embedded: {}",
+                indexed_count, skipped_count, model_embedded_count
+            );
         } else {
             tracing::warn!("Qdrant storage not configured, skipping indexing.");
         }

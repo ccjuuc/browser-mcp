@@ -1,0 +1,52 @@
+﻿# Browser MCP 服务器配置文件示例
+# 复制此文件为 browser-mcp.toml 并修改相应的配置
+
+[codebase]
+# Brave Browser 代码库的路径（绝对路径或相对路径）
+path = '/Users/ext.shangzhijie1/brave_browser/src'
+
+# 搜索时忽略的文件扩展名
+ignored_extensions = [
+    "png", "jpg", "jpeg", "gif", "ico", "svg",
+    "woff", "woff2", "ttf", "otf", "eot",
+    "pdf", "zip", "tar", "gz", "jar",
+    "class", "so", "dylib", "dll", "exe"
+]
+
+# 搜索时忽略大于此大小的文件（字节），默认 1MB
+max_file_size = 1_000_000
+
+[server]
+# 日志级别: trace, debug, info, warn, error
+log_level = "info"
+
+# 搜索默认最大结果数
+max_results = 50
+
+
+[embedding]
+# 代码向量化模型路径（可选，如果提供则使用模型，否则使用 TF-IDF）
+# 可以是：
+# 1. 本地目录路径（包含 model.safetensors 和 config.json）
+#    例如: "./model", "./codebert", "~/.browser-mcp/model"
+# 2. Hugging Face 模型 ID（会自动下载到缓存目录）
+#    推荐模型:
+#    - "microsoft/codebert-base" (原始 CodeBERT，需要转换，但兼容性最好) ⭐ 推荐
+#    - "neulab/codebert-python" (CodeBERT Python 变体，有 safetensors，基于 RoBERTa)
+#    - "jinaai/jina-embeddings-v2-base-code" (有 safetensors，但配置可能不兼容)
+# 如果未设置，将自动尝试从常见路径查找模型
+model_path = "microsoft/codebert-base"
+# 分词器路径（可选，如果未设置将从 model_path 推断）
+# tokenizer_path = "./model/tokenizer.json"
+# 向量维度（jina-embeddings-v2-base-code 和 CodeBERT 都是 768）
+dimension = 768
+# 最大序列长度
+max_length = 512
+
+[qdrant]
+# Qdrant 服务器 URL
+# 注意：Qdrant 客户端使用 gRPC，端口是 6334（不是 HTTP 端口 6333）
+url = "http://localhost:6334"
+collection_name = "browser-mcp"
+# Qdrant 二进制路径（可选，如果提供则会在需要时自动启动）
+bin_path = '/Users/ext.shangzhijie1/browser-mcp/qdrant/qdrant'
