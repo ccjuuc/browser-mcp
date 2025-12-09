@@ -38,13 +38,17 @@ candle-transformers = { version = "0.8.2", features = ["default"], optional = tr
 tokenizers = "0.19"
 shellexpand = "3.1"
 qdrant-client = "1.16.0"
-uuid = { version = "1.19.0", features = ["v5"] }
+uuid = { version = "1.19.0", features = ["v4", "v5"] }
 # HTTP 服务器支持
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
-# 用于从 Hugging Face 下载模型
+# 用于从 Hugging Face 下载模型和 Qdrant 二进制
 reqwest = { version = "0.12", features = ["blocking"] }
+# 用于解压 Qdrant 下载文件
+flate2 = "1.0"
+tar = "0.4"
+zip = "0.6"
 
 [features]
 default = ["model-embedding"]  # 默认启用模型嵌入支持

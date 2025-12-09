@@ -21,6 +21,8 @@ browser-mcp-index.json
 qdrant/storage/
 qdrant/config.yaml
 qdrant/.qdrant-initialized
+qdrant/qdrant
+qdrant/qdrant.exe
 
 # Model cache (optional, uncomment if you don't want to track downloaded models)
 # ~/.cache/browser-mcp/
