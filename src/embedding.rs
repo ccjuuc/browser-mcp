@@ -84,8 +84,22 @@ impl Embedder {
     pub fn new(config: EmbeddingConfig) -> Result<Self> {
         #[cfg(feature = "model-embedding")]
         let (model, tokenizer, device) = if let Some(ref model_path) = config.model_path {
-            // 创建设备（可以后续支持 GPU）
-            let device = Device::Cpu;
+            // 创建设备：
+            // - 默认优先尝试使用 CUDA GPU（device 0）
+            // - 如果 CUDA 不可用或失败，则自动回退到 CPU
+            let device = match Device::cuda_if_available(0) {
+                Ok(dev) => {
+                    tracing::info!("Using CUDA device 0 for model embeddings");
+                    dev
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "CUDA device not available for model embeddings, falling back to CPU: {}",
+                        e
+                    );
+                    Device::Cpu
+                }
+            };
             // 尝试加载模型
             match Self::load_model(model_path, &config.tokenizer_path, &device) {
                 Ok((m, t)) => {
