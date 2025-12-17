@@ -122,9 +122,7 @@ async fn main() -> Result<()> {
 }
 
 /// 下载 Qdrant 可执行文件
-async fn download_qdrant_binary(target_path: &std::path::Path) -> Result<()> {
-    use std::io::Write;
-    
+async fn download_qdrant_binary(target_path: &std::path::Path) -> Result<()> {  
     // 检测平台
     let (os, arch, ext) = if cfg!(target_os = "linux") {
         if cfg!(target_arch = "x86_64") {
@@ -152,15 +150,27 @@ async fn download_qdrant_binary(target_path: &std::path::Path) -> Result<()> {
         return Err(anyhow::anyhow!("Unsupported operating system"));
     };
 
-    // 获取最新版本（使用固定版本以确保稳定性）
+    // 获取固定版本（使用固定版本以确保稳定性）
     let version = "v1.11.2"; // 可以后续改为从 API 获取最新版本
     let binary_name = if cfg!(target_os = "windows") {
         "qdrant.exe"
     } else {
         "qdrant"
     };
-    
-    let archive_name = format!("qdrant-{}-{}-{}.{}", version, os, arch, ext);
+
+    // 不同平台对应的 Qdrant 发布包文件名（来自官方发布页）
+    let archive_name = match (os, arch) {
+        ("windows", "amd64") => "qdrant-x86_64-pc-windows-msvc.zip",
+        ("macos", "arm64") => "qdrant-aarch64-apple-darwin.tar.gz",
+        ("linux", "amd64") => "qdrant-x86_64-unknown-linux-gnu.tar.gz",
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unsupported platform for automatic Qdrant download: {}-{}",
+                os,
+                arch
+            ));
+        }
+    };
     let download_url = format!(
         "https://github.com/qdrant/qdrant/releases/download/{}/{}",
         version, archive_name

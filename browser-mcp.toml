@@ -3,7 +3,7 @@
 
 [codebase]
 # Brave Browser 代码库的路径（绝对路径或相对路径）
-path = '/Users/ext.shangzhijie1/brave_browser/src'
+path = 'F:\brave_browser\src'
 
 # 搜索时忽略的文件扩展名
 ignored_extensions = [
@@ -49,4 +49,4 @@ max_length = 512
 url = "http://localhost:6334"
 collection_name = "browser-mcp"
 # Qdrant 二进制路径（可选，如果提供则会在需要时自动启动）
-bin_path = '/Users/ext.shangzhijie1/browser-mcp/qdrant/qdrant'
+bin_path = './qdrant/qdrant.exe'

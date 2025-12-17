@@ -1,0 +1,7 @@
+torch
+safetensors
+packaging
+numpy
+transformers
+
+
