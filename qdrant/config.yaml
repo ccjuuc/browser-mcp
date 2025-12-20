@@ -1,5 +1,5 @@
 storage:
-  storage_path: /Users/ext.shangzhijie1/browser-mcp/qdrant/storage
+  storage_path: ./qdrant/storage
   optimizers:
     deleted_threshold: 0.9
     vacuum_min_vector_number: 100000
