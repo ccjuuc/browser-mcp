@@ -155,8 +155,18 @@ async fn main() -> Result<()> {
 
     // 根据模式启动对应的服务器
     if http_mode {
-        tracing::info!("🚀 Starting HTTP MCP Server on http://127.0.0.1:{}", port);
-        let http_server = HttpServer::new(indexer, port);
+        let mut http_server = HttpServer::new(indexer, port);
+        
+        // 如果配置了 TLS 证书和密钥，启用 HTTPS
+        if let (Some(cert_path), Some(key_path)) = (&config.server.tls_cert, &config.server.tls_key) {
+            let cert = PathBuf::from(cert_path);
+            let key = PathBuf::from(key_path);
+            http_server = http_server.with_tls(cert, key);
+            tracing::info!("🔒 HTTPS enabled: cert={:?}, key={:?}", cert_path, key_path);
+        } else {
+            tracing::info!("🚀 Starting HTTP MCP Server on http://127.0.0.1:{}", port);
+        }
+        
         http_server.run().await?;
     } else {
         tracing::info!("🚀 Starting stdio MCP Server");

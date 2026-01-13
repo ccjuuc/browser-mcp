@@ -111,6 +111,10 @@ pub struct ServerConfig {
     /// 搜索默认最大结果数
     #[serde(default = "default_max_results")]
     pub max_results: usize,
+    /// HTTPS 证书文件路径（可选，如果提供则启用 HTTPS）
+    pub tls_cert: Option<String>,
+    /// HTTPS 私钥文件路径（可选，如果提供则启用 HTTPS）
+    pub tls_key: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -118,6 +122,8 @@ impl Default for ServerConfig {
         Self {
             log_level: default_log_level(),
             max_results: default_max_results(),
+            tls_cert: None,
+            tls_key: None,
         }
     }
 }

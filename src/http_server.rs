@@ -1,6 +1,6 @@
 use crate::codebase::CodebaseIndexer;
 use crate::mcp::MCPServer;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     extract::{Json, State},
     http::StatusCode,
@@ -10,16 +10,30 @@ use axum::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 
 pub struct HttpServer {
     indexer: Arc<CodebaseIndexer>,
     port: u16,
+    cert_path: Option<PathBuf>,
+    key_path: Option<PathBuf>,
 }
 
 impl HttpServer {
     pub fn new(indexer: Arc<CodebaseIndexer>, port: u16) -> Self {
-        Self { indexer, port }
+        Self {
+            indexer,
+            port,
+            cert_path: None,
+            key_path: None,
+        }
+    }
+
+    pub fn with_tls(mut self, cert_path: PathBuf, key_path: PathBuf) -> Self {
+        self.cert_path = Some(cert_path);
+        self.key_path = Some(key_path);
+        self
     }
 
     pub async fn run(self) -> Result<()> {
@@ -35,21 +49,46 @@ impl HttpServer {
             .with_state(self.indexer);
 
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0], self.port));
-        
-        tracing::info!("🚀 Starting HTTP MCP Server...");
-        tracing::info!("🌐 HTTP MCP Server listening on http://0.0.0.0:{}", self.port);
-        tracing::info!("📡 MCP endpoint: POST http://localhost:{}/", self.port);
-        tracing::info!("❤️  Health check: GET http://localhost:{}/health", self.port);
-        tracing::info!("✅ Server ready to accept connections");
 
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        
-        tracing::info!("📡 Server started successfully, waiting for requests...");
-        axum::serve(listener, app).await?;
+        // 如果提供了证书和密钥，使用 HTTPS
+        if let (Some(cert_path), Some(key_path)) = (self.cert_path, self.key_path) {
+            tracing::info!("🔒 Starting HTTPS MCP Server...");
+            tracing::info!("🌐 HTTPS MCP Server listening on https://0.0.0.0:{}", self.port);
+            tracing::info!("📡 MCP endpoint: POST https://localhost:{}/", self.port);
+            tracing::info!("❤️  Health check: GET https://localhost:{}/health", self.port);
+            
+            // 初始化 rustls CryptoProvider（必须在加载证书之前）
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            
+            // 使用 axum-server 自动处理 HTTPS
+            use axum_server::tls_rustls::RustlsConfig;
+            
+            let tls_config = RustlsConfig::from_pem_file(cert_path, key_path)
+                .await
+                .context("Failed to load TLS certificate and key")?;
+            
+            tracing::info!("✅ HTTPS Server ready to accept connections");
+            tracing::info!("📡 Server started successfully, waiting for requests...");
+            
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await
+                .context("Failed to start HTTPS server")?;
+        } else {
+            tracing::info!("🚀 Starting HTTP MCP Server...");
+            tracing::info!("🌐 HTTP MCP Server listening on http://0.0.0.0:{}", self.port);
+            tracing::info!("📡 MCP endpoint: POST http://localhost:{}/", self.port);
+            tracing::info!("❤️  Health check: GET http://localhost:{}/health", self.port);
+            tracing::info!("✅ Server ready to accept connections");
+            tracing::info!("📡 Server started successfully, waiting for requests...");
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            axum::serve(listener, app).await?;
+        }
 
         Ok(())
     }
 }
+
 
 async fn health_check() -> impl IntoResponse {
     tracing::debug!("🏥 Health check requested");
@@ -57,7 +96,7 @@ async fn health_check() -> impl IntoResponse {
         "status": "ok",
         "service": "browser-mcp",
         "version": env!("CARGO_PKG_VERSION"),
-        "mode": "http"
+        "mode": "https"
     }))
 }
 

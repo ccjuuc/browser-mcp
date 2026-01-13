@@ -45,6 +45,9 @@ uuid = { version = "1.19.0", features = ["v4", "v5"] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+# HTTPS/TLS 支持
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
 # 用于从 Hugging Face 下载模型和 Qdrant 二进制
 reqwest = { version = "0.12", features = ["blocking"] }
 # 用于解压 Qdrant 下载文件

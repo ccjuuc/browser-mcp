@@ -32,6 +32,12 @@ log_level = "info"
 # 搜索默认最大结果数
 max_results = 50
 
+# HTTPS/TLS 配置（可选）
+# 如果同时提供了 tls_cert 和 tls_key，服务器将使用 HTTPS
+# 使用 ./generate_cert.sh 脚本可以快速生成自签名证书用于测试
+tls_cert = "./cert.pem"  # 证书文件路径
+tls_key = "./key.pem"    # 私钥文件路径
+
 
 [embedding]
 # 代码向量化模型路径（可选，如果提供则使用模型，否则使用 TF-IDF）
