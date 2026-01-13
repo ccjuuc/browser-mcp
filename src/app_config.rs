@@ -1,6 +1,51 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::{Path, PathBuf};
+
+/// 自定义反序列化函数，支持字符串和数组两种格式
+fn deserialize_path_array<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Visitor;
+    
+    struct PathArrayVisitor;
+    
+    impl<'de> Visitor<'de> for PathArrayVisitor {
+        type Value = Vec<String>;
+        
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or an array of strings")
+        }
+        
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value.to_string()])
+        }
+        
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value])
+        }
+        
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut vec = Vec::new();
+            while let Some(elem) = seq.next_element::<String>()? {
+                vec.push(elem);
+            }
+            Ok(vec)
+        }
+    }
+    
+    deserializer.deserialize_any(PathArrayVisitor)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -35,8 +80,12 @@ fn default_collection_name() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodebaseConfig {
-    /// Brave Browser 代码库路径
-    pub path: String,
+    /// 代码库路径（支持数组格式，代码会自动选择第一个存在的路径）
+    /// 支持两种格式：
+    /// 1. 数组格式（推荐）：path = ['/path1', '/path2', '/path3']
+    /// 2. 字符串格式（向后兼容）：path = '/path/to/codebase'
+    #[serde(default, deserialize_with = "deserialize_path_array")]
+    pub path: Vec<String>,
     /// 搜索时忽略的文件扩展名
     #[serde(default = "default_ignored_extensions")]
     pub ignored_extensions: Vec<String>,
@@ -106,7 +155,7 @@ fn default_max_file_size() -> u64 {
 impl Default for CodebaseConfig {
     fn default() -> Self {
         Self {
-            path: "./brave-browser".to_string(),
+            path: vec!["./brave-browser".to_string()],
             ignored_extensions: default_ignored_extensions(),
             max_file_size: default_max_file_size(),
             chunk_size: default_chunk_size(),
@@ -115,6 +164,7 @@ impl Default for CodebaseConfig {
         }
     }
 }
+
 
 fn default_log_level() -> String {
     "info".to_string()
@@ -150,36 +200,31 @@ impl Config {
 
     /// 从默认路径加载配置
     /// 按以下顺序查找配置文件：
-    /// 1. 当前目录的 `browser-mcp.toml`
-    /// 2. 用户配置目录的 `browser-mcp/config.toml`
-    /// 3. 环境变量 `BROWSER_MCP_CONFIG` 指定的路径
+    /// 1. 环境变量 `BROWSER_MCP_CONFIG` 指定的路径（最高优先级）
+    /// 2. 当前目录的 `browser-mcp.toml`
+    /// 3. 默认配置（如果都没找到）
     pub fn load() -> Result<Self> {
         // 首先检查环境变量
         if let Ok(config_path) = std::env::var("BROWSER_MCP_CONFIG") {
             return Self::from_file(config_path);
         }
 
-        // 检查当前目录
+        // 检查当前目录的 browser-mcp.toml
         let current_dir_config = PathBuf::from("browser-mcp.toml");
         if current_dir_config.exists() {
             return Self::from_file(current_dir_config);
         }
 
-        // 检查用户配置目录
-        if let Some(config_dir) = dirs::config_dir() {
-            let user_config = config_dir.join("browser-mcp").join("config.toml");
-            if user_config.exists() {
-                return Self::from_file(user_config);
-            }
-        }
-
-        // 如果都没有找到，使用默认配置
+        // 如果都没找到，使用默认配置
         Ok(Self::default())
     }
 
-    /// 获取代码库路径
-    pub fn codebase_path(&self) -> PathBuf {
-        PathBuf::from(&self.codebase.path)
+    /// 获取所有代码库路径
+    #[allow(dead_code)]
+    pub fn codebase_paths(&self) -> Vec<PathBuf> {
+        self.codebase.path.iter()
+            .map(|p| PathBuf::from(p))
+            .collect()
     }
 }
 

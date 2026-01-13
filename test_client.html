@@ -55,17 +55,14 @@
 
     <div class="card">
         <h2>📊 结果输出</h2>
-        <div id="output"></div>
         <pre id="rawOutput" style="display:none;"></pre>
     </div>
 
     <script>
-        const output = document.getElementById('output');
         const rawOutput = document.getElementById('rawOutput');
         
         async function request(method, path = "", body = null) {
             const baseUrl = document.getElementById('serverUrl').value.replace(/\/$/, "");
-            output.innerHTML = '<div style="color: #666;">🔄 请求中...</div>';
             rawOutput.style.display = 'none';
 
             try {
@@ -79,7 +76,8 @@
                 const data = await response.json();
                 return data;
             } catch (error) {
-                output.innerHTML = `<div style="color: red;">❌ 请求失败: ${error.message}</div>`;
+                rawOutput.innerText = `❌ 请求失败: ${error.message}`;
+                rawOutput.style.display = 'block';
                 throw error;
             }
         }
@@ -91,7 +89,6 @@
                     <span class="status-badge status-ok">✅ 连接成功</span>
                     <span style="margin-left: 10px; color: #666;">版本: ${data.version} | 模式: ${data.mode}</span>
                 `;
-                output.innerText = JSON.stringify(data, null, 2);
                 rawOutput.innerText = JSON.stringify(data, null, 2);
                 rawOutput.style.display = 'block';
             } catch (e) {
@@ -137,85 +134,6 @@
         function renderResult(data) {
             rawOutput.innerText = JSON.stringify(data, null, 2);
             rawOutput.style.display = 'block';
-            
-            if (data.error) {
-                output.innerHTML = `<div style="color: red;">❌ RPC 错误: ${data.error.message}</div>`;
-                return;
-            }
-
-            const result = data.result;
-            
-            // 处理工具列表
-            if (result.tools) {
-                output.innerHTML = result.tools.map(tool => `
-                    <div class="result-item">
-                        <div style="font-weight: bold; color: #2c3e50;">🛠️ ${tool.name}</div>
-                        <div style="color: #666;">${tool.description}</div>
-                        <div class="meta">参数: ${JSON.stringify(Object.keys(tool.inputSchema.properties || {}))}</div>
-                    </div>
-                `).join('');
-                return;
-            }
-
-            // 处理资源列表
-            if (result.resources) {
-                output.innerHTML = `<div>📚 发现 ${result.resources.length} 个资源</div>`;
-                return;
-            }
-
-            // 处理搜索结果
-            if (result.content && Array.isArray(result.content)) {
-                let text = result.content[0].text;
-                try {
-                    // 尝试解析 JSON 格式的搜索结果（如果是结构化的）
-                    const parsed = JSON.parse(text);
-                    if (Array.isArray(parsed)) {
-                        text = parsed; // 使用解析后的数组
-                    }
-                } catch (e) {
-                    // 不是 JSON，按普通文本处理
-                }
-
-                if (Array.isArray(text)) {
-                    // 结构化结果显示
-                    output.innerHTML = text.map(item => {
-                        // 适配不同的返回结构 (Vector Search vs Text Search)
-                        let file_path = item.file_path;
-                        let content = item.content;
-                        let start_line = item.start_line;
-                        let score = item.score;
-                        let isVectorResult = false;
-
-                        // 处理向量搜索结果结构: { chunk: {...}, similarity: 0.8 }
-                        if (item.chunk) {
-                            file_path = item.chunk.file_path;
-                            content = item.chunk.content;
-                            start_line = item.chunk.start_line;
-                            score = item.similarity;
-                            isVectorResult = true;
-                        }
-
-                        // 如果 score 不存在，默认为 0
-                        const scoreDisplay = score !== undefined ? score.toFixed(4) : "N/A";
-                        
-                        return `
-                        <div class="result-item">
-                            <div class="file-path">
-                                ${isVectorResult ? '🎯' : '📄'} ${file_path} 
-                                <span style="color: #999; font-weight: normal;">(Line ${start_line || '?'})</span>
-                            </div>
-                            <div class="code-snippet">${escapeHtml(content || '')}</div>
-                            <div class="meta">相关性: ${scoreDisplay}</div>
-                        </div>
-                    `}).join('');
-                } else {
-                    // 纯文本结果
-                    output.innerHTML = `<div style="white-space: pre-wrap;">${escapeHtml(text)}</div>`;
-                }
-                return;
-            }
-
-            output.innerHTML = "<div>✅ 请求成功完成</div>";
         }
 
         function escapeHtml(text) {

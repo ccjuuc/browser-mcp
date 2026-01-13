@@ -29,7 +29,7 @@ pub struct FileInfo {
 }
 
 pub struct CodebaseIndexer {
-    codebase_path: PathBuf,
+    codebase_paths: Vec<PathBuf>,  // 支持多个代码库路径
     config: CodebaseConfig,
     embedder: Option<Embedder>,
     qdrant: Option<Arc<QdrantStorage>>,
@@ -40,16 +40,16 @@ pub struct CodebaseIndexer {
 impl CodebaseIndexer {
     #[allow(dead_code)]
     pub fn new(codebase_path: PathBuf) -> Self {
-        Self::with_config(codebase_path, CodebaseConfig::default())
+        Self::with_config(vec![codebase_path], CodebaseConfig::default())
     }
 
     #[allow(dead_code)]
-    pub fn with_config(codebase_path: PathBuf, config: CodebaseConfig) -> Self {
-        Self::with_embedding_config(codebase_path, config, crate::embedding::EmbeddingConfig::default(), None)
+    pub fn with_config(codebase_paths: Vec<PathBuf>, config: CodebaseConfig) -> Self {
+        Self::with_embedding_config(codebase_paths, config, crate::embedding::EmbeddingConfig::default(), None)
     }
 
     pub fn with_embedding_config(
-        codebase_path: PathBuf,
+        codebase_paths: Vec<PathBuf>,  // 支持多个路径
         config: CodebaseConfig,
         embedding_config: crate::embedding::EmbeddingConfig,
         qdrant: Option<Arc<QdrantStorage>>,
@@ -61,12 +61,18 @@ impl CodebaseIndexer {
         };
         
         Self {
-            codebase_path,
+            codebase_paths,
             config,
             embedder,
             qdrant,
             index: Arc::new(RwLock::new(None)),
         }
+    }
+    
+    /// 获取所有代码库路径
+    #[allow(dead_code)]
+    pub fn codebase_paths(&self) -> &[PathBuf] {
+        &self.codebase_paths
     }
 
     pub fn is_qdrant_enabled(&self) -> bool {
@@ -74,52 +80,77 @@ impl CodebaseIndexer {
     }
 
     pub async fn search_code(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>> {
+        // 检查是否有有效的路径
+        let valid_paths: Vec<_> = self.codebase_paths.iter()
+            .filter(|p| p.exists())
+            .collect();
+        
+        if valid_paths.is_empty() {
+            anyhow::bail!(
+                "None of the configured codebase paths exist: {:?}. Please check your configuration in browser-mcp.toml",
+                self.codebase_paths
+            );
+        }
+        
         let query_lower = query.to_lowercase();
         let regex = Regex::new(&regex::escape(&query_lower))?;
         
         let mut results = Vec::new();
-        let codebase_path = self.codebase_path.clone();
 
-        // Use ignore crate to walk the directory, respecting .gitignore
-        let walker = WalkBuilder::new(&codebase_path)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .build();
-
-        for entry in walker {
-            let entry = entry?;
-            let path = entry.path();
-            
-            if !path.is_file() {
-                continue;
-            }
-
-            // Skip binary files based on config
-            if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                if self.config.ignored_extensions.iter().any(|ignored| ignored == &ext_str) {
-                    continue;
-                }
-            }
-
-            // Check file size based on config
-            if let Ok(metadata) = path.metadata() {
-                if metadata.len() > self.config.max_file_size {
-                    continue;
-                }
-            }
-
+        // 遍历所有代码库路径
+        for codebase_path in valid_paths {
             if results.len() >= max_results {
                 break;
             }
 
-            match self.search_in_file(path, &regex, &query_lower).await {
-                Ok(mut file_results) => {
-                    results.append(&mut file_results);
+            // Use ignore crate to walk the directory, respecting .gitignore
+            let walker = WalkBuilder::new(codebase_path)
+                .hidden(false)
+                .git_ignore(true)
+                .git_exclude(true)
+                .build();
+
+            for entry in walker {
+                if results.len() >= max_results {
+                    break;
                 }
-                Err(e) => {
-                    tracing::debug!("Error searching in file {:?}: {}", path, e);
+
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::debug!("Error walking directory: {}", e);
+                        continue;
+                    }
+                };
+                
+                let path = entry.path();
+                
+                if !path.is_file() {
+                    continue;
+                }
+
+                // Skip binary files based on config
+                if let Some(ext) = path.extension() {
+                    let ext_str = ext.to_string_lossy().to_lowercase();
+                    if self.config.ignored_extensions.iter().any(|ignored| ignored == &ext_str) {
+                        continue;
+                    }
+                }
+
+                // Check file size based on config
+                if let Ok(metadata) = path.metadata() {
+                    if metadata.len() > self.config.max_file_size {
+                        continue;
+                    }
+                }
+
+                match self.search_in_file(path, &regex, &query_lower, codebase_path).await {
+                    Ok(mut file_results) => {
+                        results.append(&mut file_results);
+                    }
+                    Err(e) => {
+                        tracing::debug!("Error searching in file {:?}: {}", path, e);
+                    }
                 }
             }
         }
@@ -133,6 +164,7 @@ impl CodebaseIndexer {
         path: &Path,
         regex: &Regex,
         query: &str,
+        codebase_path: &Path,
     ) -> Result<Vec<SearchResult>> {
         let content = fs::read_to_string(path).await?;
         let lines: Vec<&str> = content.lines().collect();
@@ -142,7 +174,7 @@ impl CodebaseIndexer {
             let line_lower = line.to_lowercase();
             if regex.is_match(&line_lower) || line_lower.contains(query) {
                 let relative_path = path
-                    .strip_prefix(&self.codebase_path)
+                    .strip_prefix(codebase_path)
                     .unwrap_or(path)
                     .to_string_lossy()
                     .to_string();
@@ -174,67 +206,138 @@ impl CodebaseIndexer {
     }
 
     pub async fn list_files(&self, path: &str) -> Result<Vec<FileInfo>> {
-        let target_path = if path.is_empty() {
-            self.codebase_path.clone()
-        } else {
-            self.codebase_path.join(path)
-        };
+        let mut all_files = Vec::new();
 
-        if !target_path.exists() {
-            return Err(anyhow::anyhow!("Path does not exist: {}", path));
+        // 遍历所有代码库路径
+        for codebase_path in &self.codebase_paths {
+            let target_path = if path.is_empty() {
+                codebase_path.clone()
+            } else {
+                codebase_path.join(path)
+            };
+
+            if !target_path.exists() {
+                continue;  // 跳过不存在的路径
+            }
+
+            let mut entries = match fs::read_dir(&target_path).await {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let entry_path = entry.path();
+                let metadata = match entry.metadata().await {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                let relative_path = entry_path
+                    .strip_prefix(codebase_path)
+                    .unwrap_or(&entry_path)
+                    .to_string_lossy()
+                    .to_string();
+
+                all_files.push(FileInfo {
+                    path: relative_path,
+                    size: metadata.len(),
+                    is_directory: metadata.is_dir(),
+                });
+            }
         }
 
-        let mut files = Vec::new();
-        let mut entries = fs::read_dir(&target_path).await?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let entry_path = entry.path();
-            let metadata = entry.metadata().await?;
-
-            let relative_path = entry_path
-                .strip_prefix(&self.codebase_path)
-                .unwrap_or(&entry_path)
-                .to_string_lossy()
-                .to_string();
-
-            files.push(FileInfo {
-                path: relative_path,
-                size: metadata.len(),
-                is_directory: metadata.is_dir(),
-            });
+        if all_files.is_empty() {
+            return Err(anyhow::anyhow!("Path does not exist in any codebase: {}", path));
         }
 
-        files.sort_by(|a, b| {
+        // 去重（如果多个代码库有相同路径）
+        all_files.sort_by(|a, b| {
             a.is_directory
                 .cmp(&b.is_directory)
                 .reverse()
                 .then_with(|| a.path.cmp(&b.path))
         });
+        all_files.dedup_by(|a, b| a.path == b.path);
 
-        Ok(files)
+        Ok(all_files)
     }
 
     pub async fn read_file(&self, file_path: &str) -> Result<String> {
-        let full_path = self.codebase_path.join(file_path);
+        // 遍历所有代码库路径，查找文件
+        let mut attempted_paths = Vec::new();
         
-        // Security check: ensure the path is within codebase
-        if !full_path.starts_with(&self.codebase_path) {
-            return Err(anyhow::anyhow!("Path outside codebase: {}", file_path));
+        for codebase_path in &self.codebase_paths {
+            // 尝试直接拼接路径
+            let full_path = codebase_path.join(file_path);
+            attempted_paths.push(full_path.clone());
+            
+            // Security check: ensure the path is within codebase
+            if !full_path.starts_with(codebase_path) {
+                tracing::debug!("Path security check failed: {:?} not in {:?}", full_path, codebase_path);
+                continue;
+            }
+
+            // 如果文件存在，读取并返回
+            if full_path.exists() {
+                tracing::debug!("Found file at: {:?}", full_path);
+                return fs::read_to_string(&full_path)
+                    .await
+                    .with_context(|| format!("Failed to read file: {}", file_path));
+            }
+            
+            // 如果直接拼接失败，尝试处理路径中的重复部分
+            // 例如：如果 file_path 是 "src/components/x.tsx" 而 codebase_path 已经包含 "src"
+            let file_path_buf = PathBuf::from(file_path);
+            if let Some(first_component) = file_path_buf.components().next() {
+                if let Some(codebase_name) = codebase_path.file_name() {
+                    // 如果文件路径的第一个组件与代码库路径的最后一部分相同，跳过它
+                    if first_component.as_os_str() == codebase_name {
+                        let remaining_path: PathBuf = file_path_buf.components().skip(1).collect();
+                        let alt_path = codebase_path.join(&remaining_path);
+                        attempted_paths.push(alt_path.clone());
+                        
+                        if alt_path.exists() {
+                            tracing::debug!("Found file at (alternative path): {:?}", alt_path);
+                            return fs::read_to_string(&alt_path)
+                                .await
+                                .with_context(|| format!("Failed to read file: {}", file_path));
+                        }
+                    }
+                }
+            }
         }
 
-        fs::read_to_string(&full_path)
-            .await
-            .with_context(|| format!("Failed to read file: {}", file_path))
+        // 提供详细的错误信息
+        let error_msg = format!(
+            "File not found in any codebase: {}\nAttempted paths:\n{}",
+            file_path,
+            attempted_paths.iter()
+                .map(|p| format!("  - {:?}", p))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        
+        tracing::warn!("{}", error_msg);
+        Err(anyhow::anyhow!("File not found in any codebase: {}", file_path))
     }
 
     /// 对文件进行代码切片
     pub async fn chunk_file(&self, file_path: &str) -> Result<Vec<CodeChunk>> {
-        let full_path = self.codebase_path.join(file_path);
+        // 查找文件在哪个代码库中
+        let mut full_path = None;
+        let mut codebase_path = None;
         
-        // Security check
-        if !full_path.starts_with(&self.codebase_path) {
-            return Err(anyhow::anyhow!("Path outside codebase: {}", file_path));
+        for cb_path in &self.codebase_paths {
+            let fp = cb_path.join(file_path);
+            if fp.starts_with(cb_path) && fp.exists() {
+                full_path = Some(fp);
+                codebase_path = Some(cb_path.clone());
+                break;
+            }
         }
+        
+        let full_path = full_path.ok_or_else(|| anyhow::anyhow!("File not found: {}", file_path))?;
+        let _codebase_path = codebase_path.unwrap(); // 保留用于将来可能的相对路径计算
 
         if !self.config.enable_chunking {
             // 如果未启用切片，返回空结果
@@ -330,54 +433,63 @@ impl CodebaseIndexer {
                 IndexerState::new()
             });
 
-            let codebase_path = self.codebase_path.clone();
-            tracing::info!("Scanning codebase at: {:?}", codebase_path);
+            // 收集所有代码库路径中需要处理的文件
+            tracing::info!("Scanning {} codebase path(s)...", self.codebase_paths.len());
+            let mut files_to_process: Vec<(PathBuf, PathBuf, u64, u64)> = Vec::new(); // (path, codebase_path, modified_time, file_size)
             
-            // 先收集所有需要处理的文件路径
-            tracing::info!("Collecting files to index...");
-            let mut files_to_process: Vec<(PathBuf, u64, u64)> = Vec::new(); // (path, modified_time, file_size)
-            
-            let walker = WalkBuilder::new(&codebase_path)
-                .hidden(false)
-                .git_ignore(true)
-                .git_exclude(true)
-                .build();
-            
-            for entry in walker {
-                let entry = entry?;
-                let path = entry.path();
-                
-                if !path.is_file() {
+            for codebase_path in &self.codebase_paths {
+                if !codebase_path.exists() {
+                    tracing::warn!(
+                        "Codebase path does not exist: {:?}. Skipping.",
+                        codebase_path
+                    );
                     continue;
                 }
                 
-                // Filtering
-                if let Some(ext) = path.extension() {
-                    let ext_str = ext.to_string_lossy().to_lowercase();
-                    if self.config.ignored_extensions.iter().any(|ignored| ignored == &ext_str) {
+                tracing::info!("Scanning codebase at: {:?}", codebase_path);
+                
+                let walker = WalkBuilder::new(codebase_path)
+                    .hidden(false)
+                    .git_ignore(true)
+                    .git_exclude(true)
+                    .build();
+                
+                for entry in walker {
+                    let entry = entry?;
+                    let path = entry.path();
+                    
+                    if !path.is_file() {
                         continue;
                     }
-                }
-                
-                let metadata = match path.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
+                    
+                    // Filtering
+                    if let Some(ext) = path.extension() {
+                        let ext_str = ext.to_string_lossy().to_lowercase();
+                        if self.config.ignored_extensions.iter().any(|ignored| ignored == &ext_str) {
+                            continue;
+                        }
+                    }
+                    
+                    let metadata = match path.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
 
-                if metadata.len() > self.config.max_file_size {
-                    continue;
-                }
+                    if metadata.len() > self.config.max_file_size {
+                        continue;
+                    }
 
-                let modified_time = metadata
-                    .modified()
-                    .unwrap_or(SystemTime::UNIX_EPOCH)
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                
-                let file_size = metadata.len();
-                
-                files_to_process.push((path.to_path_buf(), modified_time, file_size));
+                    let modified_time = metadata
+                        .modified()
+                        .unwrap_or(SystemTime::UNIX_EPOCH)
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    
+                    let file_size = metadata.len();
+                    
+                    files_to_process.push((path.to_path_buf(), codebase_path.clone(), modified_time, file_size));
+                }
             }
             
             let total_files = files_to_process.len();
@@ -390,9 +502,9 @@ impl CodebaseIndexer {
             let mut processed_count = 0; // 已处理的文件数（包括跳过的）
             
             // 处理每个文件
-            for (path, modified_time, file_size) in files_to_process {
+            for (path, codebase_path, modified_time, file_size) in files_to_process {
                 let relative_path = path
-                    .strip_prefix(&self.codebase_path)
+                    .strip_prefix(&codebase_path)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .to_string();
@@ -499,51 +611,56 @@ impl CodebaseIndexer {
         // 2. 否则使用本地线性扫描（慢）
         tracing::warn!("Qdrant not configured, falling back to slow linear scan");
 
-        // 遍历所有文件，收集带向量的切片
+        // 遍历所有代码库路径中的文件，收集带向量的切片
         let mut candidates: Vec<(CodeChunk, f32)> = Vec::new();
-        let codebase_path = self.codebase_path.clone();
 
-        let walker = WalkBuilder::new(&codebase_path)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .build();
-
-        for entry in walker {
-            let entry = entry?;
-            let path = entry.path();
-
-            if !path.is_file() {
+        for codebase_path in &self.codebase_paths {
+            if !codebase_path.exists() {
                 continue;
             }
 
-            // 跳过二进制文件
-            if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                if self.config.ignored_extensions.iter().any(|ignored| ignored == &ext_str) {
+            let walker = WalkBuilder::new(codebase_path)
+                .hidden(false)
+                .git_ignore(true)
+                .git_exclude(true)
+                .build();
+
+            for entry in walker {
+                let entry = entry?;
+                let path = entry.path();
+                
+                if !path.is_file() {
                     continue;
                 }
-            }
 
-            // 检查文件大小
-            if let Ok(metadata) = path.metadata() {
-                if metadata.len() > self.config.max_file_size {
-                    continue;
+                // 跳过二进制文件
+                if let Some(ext) = path.extension() {
+                    let ext_str = ext.to_string_lossy().to_lowercase();
+                    if self.config.ignored_extensions.iter().any(|ignored| ignored == &ext_str) {
+                        continue;
+                    }
                 }
-            }
 
-            // 对文件进行切片
-            let relative_path = path
-                .strip_prefix(&self.codebase_path)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
+                // 检查文件大小
+                if let Ok(metadata) = path.metadata() {
+                    if metadata.len() > self.config.max_file_size {
+                        continue;
+                    }
+                }
 
-            if let Ok(mut chunks) = self.chunk_file(&relative_path).await {
-                for chunk in chunks.drain(..) {
-                    if let Some(ref embedding) = chunk.embedding {
-                        let similarity = Embedder::cosine_similarity(&query_embedding, embedding);
-                        candidates.push((chunk, similarity));
+                // 对文件进行切片
+                let relative_path = path
+                    .strip_prefix(codebase_path)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+
+                if let Ok(mut chunks) = self.chunk_file(&relative_path).await {
+                    for chunk in chunks.drain(..) {
+                        if let Some(ref embedding) = chunk.embedding {
+                            let similarity = Embedder::cosine_similarity(&query_embedding, embedding);
+                            candidates.push((chunk, similarity));
+                        }
                     }
                 }
             }

@@ -32,10 +32,11 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
 # 模型嵌入支持（默认启用 CodeBERT + Candle）
 # 使用 candle 0.8 版本，全部设为可选依赖
-# 开启 CUDA 支持，让模型默认可以使用 GPU（如果环境支持）
-candle-core = { version = "0.8.2", features = ["cuda"], optional = true }
-candle-nn = { version = "0.8.2", features = ["cuda"], optional = true }
-candle-transformers = { version = "0.8.2", features = ["default", "cuda"], optional = true }
+# macOS 使用 Metal 后端（Apple Silicon GPU），Linux/Windows 可以使用 CUDA（需手动启用）
+# 默认使用 CPU 后端，确保跨平台兼容性
+candle-core = { version = "0.8.2", optional = true }
+candle-nn = { version = "0.8.2", optional = true }
+candle-transformers = { version = "0.8.2", features = ["default"], optional = true }
 tokenizers = "0.19"
 shellexpand = "3.1"
 qdrant-client = "1.16.0"

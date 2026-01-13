@@ -243,8 +243,41 @@ impl CodeParser {
             
             if target_types.contains(&node_type) {
                 let start_byte = current_node.start_byte();
-                let end_byte = current_node.end_byte();
-                let chunk_content = &content[start_byte..end_byte];
+                let mut end_byte = current_node.end_byte();
+                let mut chunk_content = &content[start_byte..end_byte];
+
+                // 对于结构体/类定义，如果内容太短（可能只包含声明），尝试扩展范围
+                // 检查是否包含完整定义（有大括号），如果没有，尝试包含后续内容
+                if (node_type == "struct_specifier" || node_type == "class_specifier" || 
+                    node_type == "enum_specifier" || node_type == "union_specifier") &&
+                   chunk_content.len() < 100 && 
+                   !chunk_content.contains('{') {
+                    // 尝试查找匹配的大括号，扩展内容范围
+                    let mut brace_count = 0;
+                    let mut found_start = false;
+                    let mut extended_end = end_byte;
+                    
+                    for (i, ch) in content[end_byte..].char_indices() {
+                        if ch == '{' {
+                            brace_count += 1;
+                            found_start = true;
+                        } else if ch == '}' {
+                            if found_start {
+                                brace_count -= 1;
+                                if brace_count == 0 {
+                                    extended_end = end_byte + i + 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 如果找到了匹配的大括号，使用扩展后的内容
+                    if extended_end > end_byte {
+                        end_byte = extended_end;
+                        chunk_content = &content[start_byte..end_byte];
+                    }
+                }
 
                 // 如果代码块太大，尝试进一步分割
                 if chunk_content.len() > max_chunk_size {
@@ -258,7 +291,15 @@ impl CodeParser {
                     let node_name = Self::extract_node_name(&current_node, content);
 
                     let start_point = current_node.start_position();
-                    let end_point = current_node.end_position();
+                    // 重新计算结束位置（可能已扩展）
+                    let end_point = if end_byte > current_node.end_byte() {
+                        // 需要重新计算行号
+                        let extended_content = &content[..end_byte];
+                        let line_count = extended_content.lines().count();
+                        tree_sitter::Point { row: line_count.saturating_sub(1), column: 0 }
+                    } else {
+                        current_node.end_position()
+                    };
                     let start_line = start_point.row + 1; // 转换为 1-based
                     let end_line = end_point.row + 1;
 

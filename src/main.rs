@@ -13,6 +13,7 @@ use codebase::CodebaseIndexer;
 use app_config::Config;
 use mcp::MCPServer;
 use http_server::HttpServer;
+use std::path::PathBuf;
 use std::sync::Arc;
 use storage::qdrant::QdrantStorage;
 
@@ -35,20 +36,66 @@ async fn main() -> Result<()> {
     let log_level = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| config.server.log_level.clone());
     
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(&log_level)
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::from_default_env())
-        )
-        .init();
-
-    let codebase_path = config.codebase_path();
+    let filter = tracing_subscriber::EnvFilter::try_new(&log_level)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::from_default_env());
     
-    if !codebase_path.exists() {
+    // Release 模式输出到文件，Debug 模式输出到终端
+    #[cfg(not(debug_assertions))]
+    {
+        use tracing_subscriber::fmt::writer::BoxMakeWriter;
+        let log_file_name = format!("{}.log", env!("CARGO_PKG_NAME"));
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file_name)
+            .with_context(|| format!("Failed to create log file: {}", log_file_name))?;
+        eprintln!("日志文件: {}", log_file_name);
+        // 文件输出时禁用 ANSI 颜色代码，避免日志文件中出现转义序列
+        tracing_subscriber::fmt()
+            .with_writer(BoxMakeWriter::new(log_file))
+            .with_ansi(false)  // 禁用 ANSI 颜色代码
+            .with_env_filter(filter)
+            .init();
+    }
+    
+    #[cfg(debug_assertions)]
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // 获取所有代码库路径（转换为 PathBuf）
+    let codebase_paths: Vec<PathBuf> = config.codebase.path.iter()
+        .map(|p| PathBuf::from(p))
+        .collect();
+    
+    // 显示平台信息
+    tracing::info!("🖥️  Platform: {}", std::env::consts::OS);
+    
+    // 显示配置的路径数组
+    if codebase_paths.len() > 1 {
+        tracing::info!("📋 Configured {} codebase paths:", codebase_paths.len());
+        for (i, path) in codebase_paths.iter().enumerate() {
+            let exists = if path.exists() { "✅" } else { "❌" };
+            tracing::info!("   {} [{}] {:?}", i + 1, exists, path);
+        }
+    } else {
+        let default_path = PathBuf::from("./brave-browser");
+        let path = codebase_paths.first().unwrap_or(&default_path);
+        let exists = if path.exists() { "✅" } else { "❌" };
+        tracing::info!("📁 Configured path: {} {:?}", exists, path);
+    }
+    
+    // 检查是否有有效的路径
+    let valid_paths: Vec<_> = codebase_paths.iter()
+        .filter(|p| p.exists())
+        .collect();
+    
+    if valid_paths.is_empty() {
         tracing::warn!(
-            "Codebase path does not exist: {:?}. Please check your configuration.",
-            codebase_path
+            "⚠️  None of the configured codebase paths exist. Please check your configuration in browser-mcp.toml"
         );
+        tracing::info!("💡 Configure paths as an array:");
+        tracing::info!("   path = ['/path/to/codebase1', '/path/to/codebase2']");
+    } else {
+        tracing::info!("✅ Found {} valid codebase path(s)", valid_paths.len());
     }
     
     if http_mode {
@@ -56,7 +103,6 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!("📟 Initializing stdio MCP server");
     }
-    tracing::info!("Codebase: {:?}", codebase_path);
     tracing::info!("Config: max_results={}, max_file_size={} bytes", 
                    config.server.max_results, 
                    config.codebase.max_file_size);
@@ -65,7 +111,7 @@ async fn main() -> Result<()> {
     let qdrant_storage = initialize_qdrant(&config).await;
 
     let indexer = Arc::new(CodebaseIndexer::with_embedding_config(
-        codebase_path.clone(),
+        codebase_paths,  // 传入路径数组
         config.codebase.clone(),
         config.embedding.clone(),
         qdrant_storage,
@@ -102,7 +148,7 @@ async fn main() -> Result<()> {
         let indexer_clone = indexer.clone();
         tokio::spawn(async move {
             if let Err(e) = indexer_clone.index_codebase().await {
-                tracing::error!("Background indexing failed: {}", e);
+                tracing::warn!("Background indexing failed: {}", e);
             }
         });
     }
@@ -290,7 +336,14 @@ async fn initialize_qdrant(config: &Config) -> Option<Arc<QdrantStorage>> {
     if !qdrant_running {
         // 确定 Qdrant 二进制路径
         let bin_path = if let Some(ref configured_path) = config.qdrant.bin_path {
-            std::path::PathBuf::from(configured_path)
+            let dir_path = std::path::PathBuf::from(configured_path);
+            // 配置的路径始终视为目录，自动添加二进制文件名
+            let binary_name = if cfg!(target_os = "windows") {
+                "qdrant.exe"
+            } else {
+                "qdrant"
+            };
+            dir_path.join(binary_name)
         } else {
             // 如果没有配置，使用默认路径
             let default_dir = std::env::current_dir()

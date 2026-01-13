@@ -2,8 +2,17 @@
 # 复制此文件为 browser-mcp.toml 并修改相应的配置
 
 [codebase]
-# Brave Browser 代码库的路径（绝对路径或相对路径）
-path = 'F:\brave_browser\src'
+# 代码库路径配置（支持多个源码仓库位置）
+# 方式 1：使用数组格式（推荐，支持多个代码库）
+# 所有路径都会被索引和搜索
+path = [
+    '/Users/ext.shangzhijie1/brave_browser/src',  # 代码库 1
+    '/Users/ext.shangzhijie1/other_repo/src',     # 代码库 2
+    # 可以添加更多代码库路径
+]
+
+# 方式 2：使用单个路径（向后兼容）
+# path = '/path/to/codebase'
 
 # 搜索时忽略的文件扩展名
 ignored_extensions = [
@@ -48,5 +57,8 @@ max_length = 512
 # 注意：Qdrant 客户端使用 gRPC，端口是 6334（不是 HTTP 端口 6333）
 url = "http://localhost:6334"
 collection_name = "browser-mcp"
-# Qdrant 二进制路径（可选，如果提供则会在需要时自动启动）
-bin_path = './qdrant/qdrant.exe'
+# Qdrant 二进制目录（可选，如果提供则会在需要时自动启动）
+# 只需指定目录路径，代码会自动根据平台添加二进制文件名
+# Windows 平台会自动使用 qdrant.exe，其他平台使用 qdrant
+# 如果未设置，默认使用 './qdrant' 目录
+# bin_path = './qdrant'

@@ -93,10 +93,42 @@ impl MCPServer {
     }
 
     /// Handle a JSON-RPC request (for HTTP mode)
+    /// HTTP mode is stateless, so we don't track initialization state
     pub async fn handle_json_request(&self, request: Value) -> Result<Value> {
         let req: MCPRequest = serde_json::from_value(request)?;
-        let mut initialized = true; // HTTP mode doesn't track initialization state
-        let response = self.handle_request(&req, &mut initialized).await?;
+        
+        // In HTTP mode, we handle requests directly without initialization checks
+        // Each HTTP request is independent
+        let response = match req.method.as_str() {
+            "initialize" => {
+                // Always allow initialize in HTTP mode (stateless)
+                self.initialize_response(req.id.clone())
+            }
+            "resources/list" => {
+                // No initialization check needed in HTTP mode
+                self.list_resources(req.id.clone()).await?
+            }
+            "resources/read" => {
+                // No initialization check needed in HTTP mode
+                self.read_resource(req.id.clone(), req.params.clone()).await?
+            }
+            "tools/list" => {
+                // No initialization check needed in HTTP mode
+                self.list_tools(req.id.clone()).await?
+            }
+            "tools/call" => {
+                // No initialization check needed in HTTP mode
+                self.handle_tool_call(req.id.clone(), req.params.clone()).await?
+            }
+            _ => {
+                return Ok(serde_json::to_value(self.error_response(
+                    req.id.clone(),
+                    -32601,
+                    format!("Method not found: {}", req.method),
+                ))?);
+            }
+        };
+        
         Ok(serde_json::to_value(response)?)
     }
 
@@ -250,7 +282,7 @@ impl MCPServer {
                         "contents": [{
                             "uri": params.uri,
                             "mimeType": "application/json",
-                            "text": "{\"description\": \"Use the list_files tool to list files\"}"
+                            "text": "{\"description\": \"Use the list_directory tool to list files\"}"
                         }]
                     })),
                     error: None,
@@ -414,7 +446,7 @@ impl MCPServer {
                     )),
                 }
             }
-            "list_files" => {
+            "list_directory" => {
                 let path = arguments
                     .and_then(|a| a.get("path"))
                     .and_then(|p| p.as_str())
@@ -436,7 +468,7 @@ impl MCPServer {
                     Err(e) => Ok(self.error_response(
                         id,
                         -32603,
-                        format!("List files failed: {}", e),
+                        format!("List directory failed: {}", e),
                     )),
                 }
             }
@@ -535,15 +567,40 @@ impl MCPServer {
                 match self.indexer.search_by_embedding(query, max_results).await {
                     Ok(results) => {
                         // 将结果转换为 JSON 格式，包含相似度分数
-                        let results_json: Vec<serde_json::Value> = results
-                            .into_iter()
-                            .map(|(chunk, similarity)| {
-                                serde_json::json!({
-                                    "chunk": chunk,
-                                    "similarity": similarity
-                                })
-                            })
-                            .collect();
+                        // 同时将绝对路径转换为相对路径，方便 Cursor 使用 read_file 工具
+                        // 如果代码片段太短，自动读取文件获取更多上下文
+                        let mut results_json = Vec::new();
+                        
+                        for (chunk, similarity) in results {
+                            // 将绝对路径转换为相对路径（相对于代码库根目录）
+                            let relative_path = if std::path::Path::new(&chunk.file_path).is_absolute() {
+                                // 尝试从常见路径模式中提取相对路径
+                                if let Some(idx) = chunk.file_path.find("/src/") {
+                                    chunk.file_path[idx + 5..].to_string()
+                                } else if let Some(idx) = chunk.file_path.find("/brave_browser/") {
+                                    chunk.file_path[idx + 15..].to_string()
+                                } else {
+                                    chunk.file_path.clone()
+                                }
+                            } else {
+                                chunk.file_path.clone()
+                            };
+                            
+                            // content 已经存储在 Qdrant 中，直接使用，无需读取文件
+                            // 如果用户需要更多上下文，可以使用 file_path 调用 read_file 工具
+                            results_json.push(serde_json::json!({
+                                "chunk": {
+                                    "file_path": relative_path,  // 相对路径，需要更多上下文时可调用 read_file 工具
+                                    "content": chunk.content,  // 从 Qdrant 中获取的代码片段（已存储）
+                                    "language": chunk.language,
+                                    "start_line": chunk.start_line,
+                                    "end_line": chunk.end_line,
+                                    "node_type": chunk.node_type,
+                                    "node_name": chunk.node_name,
+                                },
+                                "similarity": similarity
+                            }));
+                        }
                         
                         Ok(MCPResponse {
                             jsonrpc: "2.0".to_string(),
